@@ -41,13 +41,6 @@ internal class SoundManager : IDisposable {
     playbackDevice = engine.InitializePlaybackDevice(defaultDevice, audioFormat);
 
     LoadFile();
-    dataProvider = new StreamDataProvider(engine, audioFormat, File.OpenRead(soundFile));
-    player = new SoundPlayer(engine, audioFormat, dataProvider);
-
-    player.PlaybackEnded += (_, _) => player.Stop();
-
-    playbackDevice.MasterMixer.AddComponent(player);
-    playbackDevice.Start();
     
     CancelToken = new CancellationTokenSource();
     Task.Run(() => OofAudioPolling(CancelToken.Token));
@@ -68,6 +61,18 @@ internal class SoundManager : IDisposable {
 
   public void Play(CancellationToken token, float volume = 1f) {
     _ = Task.Run(() => {
+      dataProvider = new StreamDataProvider(engine, audioFormat, File.OpenRead(soundFile));
+      player = new SoundPlayer(engine, audioFormat, dataProvider);
+      playbackDevice.MasterMixer.AddComponent(player);
+      playbackDevice.Start();
+      
+      player.PlaybackEnded += (_, _) => {
+        player.Stop();
+        playbackDevice.MasterMixer.RemoveComponent(player);
+        player.Dispose();
+      };
+
+      
       // To play a sound, we need to stop it first if it's already playing
       if (player.State == PlaybackState.Playing) {
         player.Stop();
