@@ -23,8 +23,7 @@ internal class SoundManager : IDisposable {
   private MiniAudioEngine engine;
   private AudioPlaybackDevice playbackDevice;
   private AudioFormat audioFormat;
-  private StreamDataProvider dataProvider;
-  private SoundPlayer player;
+
 
   internal CancellationTokenSource CancelToken;
 
@@ -56,28 +55,29 @@ internal class SoundManager : IDisposable {
   }
 
   public void Stop() {
-    player.Stop();
+    // When an audio plays this will cause a tiny lag spike, but as this is only used in the ConfigWindow, it
+    // should be fine
+    playbackDevice.Stop();
   }
 
   public void Play(CancellationToken token, float volume = 1f) {
     _ = Task.Run(() => {
-      dataProvider = new StreamDataProvider(engine, audioFormat, File.OpenRead(soundFile));
-      player = new SoundPlayer(engine, audioFormat, dataProvider);
+      var dataProvider = new StreamDataProvider(engine, audioFormat, File.OpenRead(soundFile));
+      var player = new SoundPlayer(engine, audioFormat, dataProvider);
       playbackDevice.MasterMixer.AddComponent(player);
       playbackDevice.Start();
       
+      // this cleans up after the playback ends
       player.PlaybackEnded += (_, _) => {
         player.Stop();
         playbackDevice.MasterMixer.RemoveComponent(player);
         player.Dispose();
       };
-
       
-      // To play a sound, we need to stop it first if it's already playing
       if (player.State == PlaybackState.Playing) {
         player.Stop();
       }
-
+      
       player.Volume = volume;
       player.Play();
     }, token);
@@ -155,9 +155,6 @@ internal class SoundManager : IDisposable {
     CancelToken.Cancel();
     CancelToken.Dispose();
     
-    playbackDevice.MasterMixer.RemoveComponent(player);
-    player.Dispose();
-    dataProvider.Dispose();
     playbackDevice.Dispose();
     engine.Dispose();
   }
