@@ -1,9 +1,15 @@
-using NAudio.Wave;
+using SoundFlow.Abstracts.Devices;
+using SoundFlow.Backends.MiniAudio;
+using SoundFlow.Components;
+using SoundFlow.Providers;
 using System;
 using System.IO;
+using System.Linq;
 using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
+using AudioFormat = SoundFlow.Structs.AudioFormat;
+using PlaybackState = SoundFlow.Enums.PlaybackState;
 
 namespace OofPlugin;
 
@@ -12,9 +18,13 @@ internal class SoundManager : IDisposable {
   private readonly DeadPlayersList DeadPlayersList;
 
   // sound
-  public bool isSoundPlaying { get; private set; } = false;
-  private DirectSoundOut? soundOut;
-  private string? soundFile;
+  private string soundFile;
+
+  private MiniAudioEngine engine;
+  private AudioPlaybackDevice playbackDevice;
+  private AudioFormat audioFormat;
+  private StreamDataProvider dataProvider;
+  private SoundPlayer player;
 
   internal CancellationTokenSource CancelToken;
 
@@ -22,17 +32,30 @@ internal class SoundManager : IDisposable {
     Configuration = plugin.Configuration;
     DeadPlayersList = plugin.DeadPlayersList;
 
-    LoadFile();
+    engine = new MiniAudioEngine();
+    engine.UpdateAudioDevicesInfo();
 
+    // Get the system default playback device 
+    var defaultDevice = engine.PlaybackDevices.FirstOrDefault(x => x.IsDefault);
+    audioFormat = AudioFormat.DvdHq;
+    playbackDevice = engine.InitializePlaybackDevice(defaultDevice, audioFormat);
+
+    LoadFile();
+    dataProvider = new StreamDataProvider(engine, audioFormat, File.OpenRead(soundFile));
+    player = new SoundPlayer(engine, audioFormat, dataProvider);
+
+    player.PlaybackEnded += (_, _) => player.Stop();
+
+    playbackDevice.MasterMixer.AddComponent(player);
+    playbackDevice.Start();
+    
     CancelToken = new CancellationTokenSource();
     Task.Run(() => OofAudioPolling(CancelToken.Token));
   }
 
   public void LoadFile() {
     if (string.IsNullOrEmpty(Configuration.DefaultSoundImportPath)) {
-      soundFile = Path.Combine(
-          Dalamud.PluginInterface.AssemblyLocation.Directory!.FullName,
-          "oof.wav");
+      soundFile = Path.Combine(Dalamud.PluginInterface.AssemblyLocation.Directory!.FullName, "oof.wav");
       return;
     }
 
@@ -40,54 +63,19 @@ internal class SoundManager : IDisposable {
   }
 
   public void Stop() {
-    soundOut?.Pause();
-    soundOut?.Dispose();
-    soundOut = null;
+    player.Stop();
   }
 
   public void Play(CancellationToken token, float volume = 1f) {
     _ = Task.Run(() => {
-      isSoundPlaying = true;
-
-      WaveStream reader;
-      try {
-        reader = new MediaFoundationReader(soundFile);
-      }
-      catch (Exception ex) {
-        isSoundPlaying = false;
-        Dalamud.Log.Error("Failed to read sound file", ex);
-        return;
+      // To play a sound, we need to stop it first if it's already playing
+      if (player.State == PlaybackState.Playing) {
+        player.Stop();
       }
 
-      var audioStream =
-          new WaveChannel32(reader) {
-            Volume = Configuration.Volume * volume,
-            PadWithZeroes = false // you need this or else playbackstopped event will not fire
-          };
-
-      using (reader) {
-        soundOut?.Pause();
-        soundOut?.Dispose();
-        soundOut = new DirectSoundOut();
-
-        try {
-          soundOut.Init(audioStream);
-          soundOut.Play();
-
-          soundOut.PlaybackStopped += (_, _) => { isSoundPlaying = false; };
-        }
-        catch (Exception ex) {
-          isSoundPlaying = false;
-          Dalamud.Log.Error("Failed to play sound", ex);
-        }
-      }
-    }, token).ContinueWith((t) => {
-      t.Exception?.Handle((e) => {
-        Dalamud.Log.Error($"Failed to dispose DirectSoundOut {e} ");
-
-        return true;
-      });
-    });
+      player.Volume = volume;
+      player.Play();
+    }, token);
   }
 
   private async Task OofAudioPolling(CancellationToken token) {
@@ -100,8 +88,7 @@ internal class SoundManager : IDisposable {
 
         // Run on framework thread AND await it so exceptions are observed
         await Dalamud.Framework.RunOnFrameworkThread(() => {
-          var localPlayer =
-              Dalamud.ObjectTable.LocalPlayer;
+          var localPlayer = Dalamud.ObjectTable.LocalPlayer;
           if (localPlayer is null)
             return;
 
@@ -111,10 +98,8 @@ internal class SoundManager : IDisposable {
 
             float volume = 1f;
 
-            if (Configuration.DistanceBasedOof &&
-                player.Distance != Vector3.Zero) {
-              var dist =
-                  Vector3.Distance(localPlayer.Position, player.Distance);
+            if (Configuration.DistanceBasedOof && player.Distance != Vector3.Zero) {
+              var dist = Vector3.Distance(localPlayer.Position, player.Distance);
               volume = VolumeFromDist(dist);
             }
 
@@ -139,8 +124,8 @@ internal class SoundManager : IDisposable {
     dist = Math.Min(dist, distMax);
 
     var falloff = Configuration.DistanceFalloff > 0
-                      ? 3f - Configuration.DistanceFalloff * 3f
-                      : 2.999f;
+      ? 3f - Configuration.DistanceFalloff * 3f
+      : 2.999f;
 
     var vol = 1f - ((dist / distMax) * (1f / falloff));
     return Math.Max(Configuration.DistanceMinVolume, vol);
@@ -164,8 +149,11 @@ internal class SoundManager : IDisposable {
   public void Dispose() {
     CancelToken.Cancel();
     CancelToken.Dispose();
-
-    soundOut?.Dispose();
-    soundOut = null;
+    
+    playbackDevice.MasterMixer.RemoveComponent(player);
+    player.Dispose();
+    dataProvider.Dispose();
+    playbackDevice.Dispose();
+    engine.Dispose();
   }
 }
