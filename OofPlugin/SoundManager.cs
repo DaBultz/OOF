@@ -23,6 +23,7 @@ internal class SoundManager : IDisposable {
   private MiniAudioEngine engine;
   private AudioPlaybackDevice playbackDevice;
   private AudioFormat audioFormat;
+  private SoundPlayer? currentPlayer;
 
 
   internal CancellationTokenSource CancelToken;
@@ -36,6 +37,7 @@ internal class SoundManager : IDisposable {
 
     // Get the system default playback device 
     var defaultDevice = engine.PlaybackDevices.FirstOrDefault(x => x.IsDefault);
+    
     audioFormat = AudioFormat.DvdHq;
     playbackDevice = engine.InitializePlaybackDevice(defaultDevice, audioFormat);
 
@@ -62,8 +64,18 @@ internal class SoundManager : IDisposable {
 
   public void Play(CancellationToken token, float volume = 1f) {
     _ = Task.Run(() => {
+      if (!Configuration.AudioOverlap && currentPlayer != null) {
+        currentPlayer.Stop();
+        playbackDevice.MasterMixer.RemoveComponent(currentPlayer); 
+        currentPlayer.Dispose();
+        currentPlayer = null;
+      }
+      
       var dataProvider = new StreamDataProvider(engine, audioFormat, File.OpenRead(soundFile));
       var player = new SoundPlayer(engine, audioFormat, dataProvider);
+      
+      currentPlayer = player;
+      
       playbackDevice.MasterMixer.AddComponent(player);
       playbackDevice.Start();
       
@@ -74,9 +86,6 @@ internal class SoundManager : IDisposable {
         player.Dispose();
       };
       
-      if (player.State == PlaybackState.Playing) {
-        player.Stop();
-      }
       
       player.Volume = volume;
       player.Play();
