@@ -3,6 +3,7 @@ using SoundFlow.Backends.MiniAudio;
 using SoundFlow.Components;
 using SoundFlow.Providers;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Numerics;
@@ -23,7 +24,7 @@ internal class SoundManager : IDisposable {
   private MiniAudioEngine engine;
   private AudioPlaybackDevice playbackDevice;
   private AudioFormat audioFormat;
-  private SoundPlayer? currentPlayer;
+  private List<SoundPlayer> activePlayers = new();
 
 
   internal CancellationTokenSource CancelToken;
@@ -43,6 +44,9 @@ internal class SoundManager : IDisposable {
 
     LoadFile();
     
+    playbackDevice.Start();
+    
+    
     CancelToken = new CancellationTokenSource();
     Task.Run(() => OofAudioPolling(CancelToken.Token));
   }
@@ -56,31 +60,37 @@ internal class SoundManager : IDisposable {
     soundFile = Configuration.DefaultSoundImportPath;
   }
 
+  /// <summary>
+  /// Stops all active sound players and cleans up their resources.
+  /// </summary>
   public void Stop() {
-    // When an audio plays this will cause a tiny lag spike, but as this is only used in the ConfigWindow, it
-    // should be fine
-    playbackDevice.Stop();
+    lock (activePlayers) {
+      activePlayers.ForEach(x => {
+        x.Stop();
+        playbackDevice.MasterMixer.RemoveComponent(x);
+        x.Dispose();
+      });
+
+      activePlayers.Clear();
+    }
   }
 
   public void Play(CancellationToken token, float volume = 1f) {
     _ = Task.Run(() => {
-      if (!Configuration.AudioOverlap && currentPlayer != null) {
-        currentPlayer.Stop();
-        playbackDevice.MasterMixer.RemoveComponent(currentPlayer); 
-        currentPlayer.Dispose();
-        currentPlayer = null;
+      if (!Configuration.AudioOverlap) {
+        Stop(); 
       }
       
       var dataProvider = new StreamDataProvider(engine, audioFormat, File.OpenRead(soundFile));
       var player = new SoundPlayer(engine, audioFormat, dataProvider);
       
-      currentPlayer = player;
+      lock(activePlayers) { activePlayers.Add(player); }
       
       playbackDevice.MasterMixer.AddComponent(player);
-      playbackDevice.Start();
       
       // this cleans up after the playback ends
       player.PlaybackEnded += (_, _) => {
+        lock(activePlayers) { activePlayers.Remove(player); };
         player.Stop();
         playbackDevice.MasterMixer.RemoveComponent(player);
         player.Dispose();
