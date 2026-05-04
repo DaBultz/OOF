@@ -66,6 +66,13 @@ public class ConfigWindow : Window, IDisposable {
       Configuration.Save();
     };
     ImGuiComponents.HelpMarker("Overlap audio instead of stopping an already playing audio");
+
+    ImGui.Spacing();
+    if (ImGui.Button("Reload Audio Devices")) {
+      Plugin.SoundManager.InitializeAudioDevice(); 
+    }
+    
+    
     ImGui.Spacing();
     ImGui.TextColoredWrapped(headingColor, "Play sound on");
 
@@ -329,7 +336,5 @@ public class ConfigWindow : Window, IDisposable {
 
     return fileManager;
   }
-
-
 }
 

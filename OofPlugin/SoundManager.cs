@@ -10,7 +10,6 @@ using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
 using AudioFormat = SoundFlow.Structs.AudioFormat;
-using PlaybackState = SoundFlow.Enums.PlaybackState;
 
 namespace OofPlugin;
 
@@ -19,12 +18,12 @@ internal class SoundManager : IDisposable {
   private readonly DeadPlayersList DeadPlayersList;
 
   // sound
-  private string soundFile;
+  private string? soundFile;
 
-  private MiniAudioEngine engine;
-  private AudioPlaybackDevice playbackDevice;
+  private readonly MiniAudioEngine engine;
+  private AudioPlaybackDevice? playbackDevice;
   private AudioFormat audioFormat;
-  private List<SoundPlayer> activePlayers = new();
+  private readonly List<SoundPlayer> activePlayers = new();
 
 
   internal CancellationTokenSource CancelToken;
@@ -33,19 +32,10 @@ internal class SoundManager : IDisposable {
     Configuration = plugin.Configuration;
     DeadPlayersList = plugin.DeadPlayersList;
 
-    engine = new MiniAudioEngine();
-    engine.UpdateAudioDevicesInfo();
-
-    // Get the system default playback device 
-    var defaultDevice = engine.PlaybackDevices.FirstOrDefault(x => x.IsDefault);
-    
-    audioFormat = AudioFormat.DvdHq;
-    playbackDevice = engine.InitializePlaybackDevice(defaultDevice, audioFormat);
-
     LoadFile();
     
-    playbackDevice.Start();
-    
+    engine = new MiniAudioEngine();
+    InitializeAudioDevice();
     
     CancelToken = new CancellationTokenSource();
     Task.Run(() => OofAudioPolling(CancelToken.Token));
@@ -61,13 +51,47 @@ internal class SoundManager : IDisposable {
   }
 
   /// <summary>
+  /// Create the playback device using the current system default output and starts it, if it's already
+  /// created it will be destroyed and re-created, safely
+  /// Falls back to logging an error if device discovery or initialization fails.
+  /// </summary>
+  public void InitializeAudioDevice() {
+    DestroyAudioDevice();
+
+    try {
+      engine.UpdateAudioDevicesInfo();
+
+      // Get the system default playback device 
+      var defaultDevice = engine.PlaybackDevices.FirstOrDefault(x => x.IsDefault);
+
+      audioFormat = AudioFormat.DvdHq;
+      playbackDevice = engine.InitializePlaybackDevice(defaultDevice, audioFormat);
+      playbackDevice.Start();
+    }
+    catch (Exception ex) {
+      Dalamud.Log.Error(ex, "OOF: OofAudioRecreateAudioDevice failed");
+    }
+  }
+
+
+  private void DestroyAudioDevice() {
+    Stop();
+    
+    if(playbackDevice != null) {
+      playbackDevice.Stop();
+      playbackDevice.Dispose();
+    }
+    
+  }
+
+  /// <summary>
   /// Stops all active sound players and cleans up their resources.
   /// </summary>
   public void Stop() {
     lock (activePlayers) {
       activePlayers.ForEach(x => {
         x.Stop();
-        playbackDevice.MasterMixer.RemoveComponent(x);
+        playbackDevice?.MasterMixer.RemoveComponent(x);
         x.Dispose();
       });
 
@@ -80,22 +104,26 @@ internal class SoundManager : IDisposable {
       if (!Configuration.AudioOverlap) {
         Stop(); 
       }
+
+      if (soundFile == null) {
+        Dalamud.Log.Error("OOF: No sound file found to play.");
+        return;
+      }
       
       var dataProvider = new StreamDataProvider(engine, audioFormat, File.OpenRead(soundFile));
       var player = new SoundPlayer(engine, audioFormat, dataProvider);
       
       lock(activePlayers) { activePlayers.Add(player); }
       
-      playbackDevice.MasterMixer.AddComponent(player);
+      playbackDevice?.MasterMixer.AddComponent(player);
       
       // this cleans up after the playback ends
       player.PlaybackEnded += (_, _) => {
-        lock(activePlayers) { activePlayers.Remove(player); };
+        lock(activePlayers) { activePlayers.Remove(player); }
         player.Stop();
-        playbackDevice.MasterMixer.RemoveComponent(player);
+        playbackDevice?.MasterMixer.RemoveComponent(player);
         player.Dispose();
       };
-      
       
       player.Volume = volume;
       player.Play();
@@ -174,7 +202,7 @@ internal class SoundManager : IDisposable {
     CancelToken.Cancel();
     CancelToken.Dispose();
     
-    playbackDevice.Dispose();
+    playbackDevice?.Dispose();
     engine.Dispose();
   }
 }
