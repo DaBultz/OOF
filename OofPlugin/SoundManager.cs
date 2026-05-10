@@ -25,7 +25,8 @@ internal class SoundManager : IDisposable {
   private AudioFormat audioFormat;
   private readonly List<SoundPlayer> activePlayers = new();
 
-
+  private bool isInitialized = false;
+  
   internal CancellationTokenSource CancelToken;
 
   public SoundManager(OofPlugin plugin) {
@@ -67,8 +68,11 @@ internal class SoundManager : IDisposable {
       audioFormat = AudioFormat.DvdHq;
       playbackDevice = engine.InitializePlaybackDevice(defaultDevice, audioFormat);
       playbackDevice.Start();
+
+      isInitialized = true;
     }
     catch (Exception ex) {
+      isInitialized = false;
       Dalamud.Log.Error(ex, "OOF: OofAudioRecreateAudioDevice failed");
     }
   }
@@ -88,6 +92,8 @@ internal class SoundManager : IDisposable {
   /// Stops all active sound players and cleans up their resources.
   /// </summary>
   public void Stop() {
+    if (!isInitialized) return;
+    
     lock (activePlayers) {
       activePlayers.ForEach(x => {
         x.Stop();
@@ -100,6 +106,8 @@ internal class SoundManager : IDisposable {
   }
 
   public void Play(CancellationToken token, float volume = 1f) {
+    if (!isInitialized) return;
+    
     _ = Task.Run(() => {
       if (!Configuration.AudioOverlap) {
         Stop(); 
